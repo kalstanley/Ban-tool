@@ -1,0 +1,7 @@
+Feature,Instagram,WhatsApp
+API Submission,✅ via instagrapi private API (report_user),❌ No public API — uses email template
+Online Form,Via Instagram's built-in reporting,Directs to whatsapp.com/contact
+Email Option,N/A,grievance_officer_wa@support.whatsapp.com
+Session Persistence,✅ Saves & reloads auth sessions,N/A
+Evidence Attachment,URLs & descriptions,URLs & descriptions
+Human-Readable Output,.txt + .json,.txt + .json

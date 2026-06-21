@@ -1,0 +1,738 @@
+#!/data/data/com.termux/files/usr/bin/python3
+"""
+MetaBanReport v1.0
+WhatsApp & Instagram Ban Report Generator
+Authorized Penetration Testing Tool — Termux-Compatible
+"""
+
+import os
+import sys
+import json
+import base64
+import datetime
+import argparse
+import re
+import time
+import random
+from pathlib import Path
+from getpass import getpass
+
+try:
+    import requests
+    from colorama import Fore, Style, init
+    init(autoreset=True)
+except ImportError:
+    print("[!] Missing dependencies. Run: pip install requests colorama")
+    sys.exit(1)
+
+# ─── Configuration ───────────────────────────────────────────────────────────────
+
+REPORTS_DIR = Path.home() / ".metaban_reports"
+REPORTS_DIR.mkdir(exist_ok=True)
+
+VERSION = "1.0"
+BANNER = f"""
+{Fore.RED}╔══════════════════════════════════════════════════╗
+║         {Fore.WHITE}MetaBanReport v{VERSION}{Fore.RED}              ║
+║   {Fore.YELLOW}WhatsApp + Instagram Ban Report Generator{Fore.RED}    ║
+║        {Fore.CYAN}Authorized Pentest Tool{Fore.RED}              ║
+╚══════════════════════════════════════════════════╝{Style.RESET_ALL}
+"""
+
+# ─── WhatsApp Reporting Endpoints (via Web) ──────────────────────────────────────
+
+WHATSAPP_REPORT_URLS = {
+    "abuse": "https://www.whatsapp.com/contact/?subject=abuse",
+    "appeal": "https://www.whatsapp.com/contact/?subject=appeal",
+    "grievance": "https://www.whatsapp.com/contact/?subject=grievance_officer",
+}
+
+WHATSAPP_EMAILS = {
+    "grievance": "grievance_officer_wa@support.whatsapp.com",
+    "abuse": "support@whatsapp.com",
+}
+
+# ─── Instagram API Endpoints ──────────────────────────────────────────────────────
+
+INSTAGRAM_REPORT_REASONS = {
+    "1": {"id": "impersonation", "label": "Impersonation Account"},
+    "2": {"id": "spam",          "label": "Spam / Fake Engagement"},
+    "3": {"id": "harassment",    "label": "Harassment / Bullying"},
+    "4": {"id": "hate_speech",   "label": "Hate Speech / Violence Incitement"},
+    "5": {"id": "nudity",        "label": "Nudity / Sexual Content"},
+    "6": {"id": "scam",          "label": "Scam / Phishing"},
+    "7": {"id": "ip_violation",  "label": "Intellectual Property Violation"},
+    "8": {"id": "terrorism",     "label": "Terrorism / Dangerous Content"},
+    "9": {"id": "drugs",         "label": "Sale of Regulated Goods"},
+    "10": {"id": "custom",       "label": "Custom Report (Manual Entry)"},
+}
+
+# ─── Utility Functions ────────────────────────────────────────────────────────────
+
+def print_header(title):
+    """Print a formatted section header."""
+    width = 56
+    print(f"\n{Fore.CYAN}╔{'═' * width}╗")
+    print(f"║ {Fore.WHITE}{title:^54}{Fore.CYAN} ║")
+    print(f"╚{'═' * width}╝{Style.RESET_ALL}")
+
+def timestamp():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def gen_report_id():
+    """Generate a unique report ID."""
+    return f"MBR-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(1000,9999)}"
+
+def save_report(report_data, platform):
+    """Save a report to disk as JSON."""
+    report_id = report_data.get("report_id", gen_report_id())
+    filename = REPORTS_DIR / f"{platform}_report_{report_id}.json"
+    with open(filename, "w") as f:
+        json.dump(report_data, f, indent=2)
+    print(f"\n{Fore.GREEN}[✔] Report saved: {filename}{Style.RESET_ALL}")
+    return filename
+
+def load_previous_reports():
+    """List previously saved reports."""
+    files = list(REPORTS_DIR.glob("*_report_*.json"))
+    if not files:
+        print(f"{Fore.YELLOW}[!] No previous reports found.{Style.RESET_ALL}")
+        return
+    print_header("Previously Saved Reports")
+    for i, f in enumerate(files, 1):
+        try:
+            with open(f) as jf:
+                data = json.load(jf)
+            plat = data.get("platform", "unknown").upper()
+            rid = data.get("report_id", "N/A")
+            target = data.get("target_username", data.get("target_phone", "unknown"))
+            status = data.get("status", "unknown")
+            print(f"  {i}. [{plat}] {rid} → {target} ({status})")
+        except:
+            print(f"  {i}. {f.name} (corrupted)")
+    return files
+
+# ─── Instagram Reporter ───────────────────────────────────────────────────────────
+
+class InstagramReporter:
+    """Handles Instagram report generation and API-based reporting."""
+
+    def __init__(self):
+        self.client = None
+        self.logged_in = False
+        self.session_file = Path.home() / ".metaban_reports" / "ig_session.json"
+
+    def login_interactive(self):
+        """Login to Instagram via instagrapi."""
+        print(f"\n{Fore.YELLOW}[*] Instagram Login Required{Style.RESET_ALL}")
+        username = input("  Instagram Username: ").strip()
+        password = getpass("  Instagram Password: ").strip()
+
+        try:
+            from instagrapi import Client
+            self.client = Client()
+
+            # Load previous session if available
+            if self.session_file.exists():
+                try:
+                    self.client.load_settings(self.session_file)
+                    self.client.login(username, password)
+                    print(f"{Fore.GREEN}[✔] Session restored from cache.{Style.RESET_ALL}")
+                    self.logged_in = True
+                    return
+                except:
+                    print(f"{Fore.YELLOW}[!] Cached session expired. Re-logging...{Style.RESET_ALL}")
+
+            self.client.login(username, password)
+            self.client.dump_settings(self.session_file)
+            self.logged_in = True
+            print(f"{Fore.GREEN}[✔] Login successful.{Style.RESET_ALL}")
+
+        except ImportError:
+            print(f"{Fore.RED}[✘] instagrapi not installed. Install: pip install instagrapi{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Report will be SAVED LOCALLY only (no API submission).{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✘] Login failed: {e}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Report will be SAVED LOCALLY only.{Style.RESET_ALL}")
+
+    def resolve_target(self, target):
+        """Resolve a username or ID to user info."""
+        if not self.client or not self.logged_in:
+            return {"id": "unknown", "username": target, "resolved": False}
+
+        try:
+            # Try as username first
+            user_info = self.client.user_info_by_username(target)
+            return {
+                "id": str(user_info.pk),
+                "username": user_info.username,
+                "full_name": user_info.full_name,
+                "follower_count": user_info.follower_count,
+                "following_count": user_info.following_count,
+                "is_verified": user_info.is_verified,
+                "is_private": user_info.is_private,
+                "resolved": True,
+            }
+        except:
+            try:
+                # Try as PK
+                user_info = self.client.user_info(int(target))
+                return {
+                    "id": str(user_info.pk),
+                    "username": user_info.username,
+                    "full_name": user_info.full_name,
+                    "resolved": True,
+                }
+            except:
+                return {"id": "unknown", "username": target, "resolved": False}
+
+    def build_report(self):
+        """Interactive report builder for Instagram."""
+        print_header("Instagram Report Builder")
+
+        report = {
+            "report_id": gen_report_id(),
+            "platform": "instagram",
+            "timestamp": timestamp(),
+            "reporter": {},
+            "target": {},
+            "evidence": [],
+            "reason": "",
+            "reason_category": "",
+            "description": "",
+            "status": "draft",
+        }
+
+        # Reporter info
+        print(f"\n{Fore.CYAN}[ Reporter Account ]{Style.RESET_ALL}")
+        if not self.logged_in:
+            rep_user = input("  Your Instagram Username: ").strip()
+            report["reporter"] = {"username": rep_user, "authenticated": False}
+        else:
+            report["reporter"] = {
+                "username": self.client.username,
+                "user_id": str(self.client.user_id),
+                "authenticated": True,
+            }
+
+        # Target info
+        print(f"\n{Fore.CYAN}[ Target Account ]{Style.RESET_ALL}")
+        target = input("  Target Username/ID: ").strip()
+
+        if self.logged_in:
+            target_info = self.resolve_target(target)
+            report["target"] = target_info
+            if target_info.get("resolved"):
+                print(f"{Fore.GREEN}  → Resolved: @{target_info['username']} (ID: {target_info['id']}){Style.RESET_ALL}")
+                if target_info.get("is_verified"):
+                    print(f"{Fore.YELLOW}  ⚠ This account is VERIFIED{Style.RESET_ALL}")
+        else:
+            report["target"] = {"username": target, "id": "unknown", "resolved": False}
+
+        # Report reason
+        print(f"\n{Fore.CYAN}[ Violation Category ]{Style.RESET_ALL}")
+        for key, val in INSTAGRAM_REPORT_REASONS.items():
+            print(f"  {key}. {val['label']}")
+
+        choice = input(f"\n  Select reason [1-10]: ").strip()
+        if choice in INSTAGRAM_REPORT_REASONS:
+            reason_data = INSTAGRAM_REPORT_REASONS[choice]
+            report["reason_category"] = reason_data["id"]
+            report["reason"] = reason_data["label"]
+        else:
+            report["reason_category"] = "custom"
+            report["reason"] = input("  Enter custom reason: ").strip()
+
+        # Description
+        print(f"\n{Fore.CYAN}[ Report Details ]{Style.RESET_ALL}")
+        print(f"  Provide specific evidence (dates, URLs, screenshots, etc.):")
+        description = input("  Description: ").strip()
+        report["description"] = description
+
+        # Evidence URLs
+        print(f"\n{Fore.CYAN}[ Evidence URLs (optional) ]{Style.RESET_ALL}")
+        print(f"  Enter URLs one per line, empty line to finish:")
+        while True:
+            url = input("  > ").strip()
+            if not url:
+                break
+            report["evidence"].append(url)
+
+        # Report method
+        print(f"\n{Fore.CYAN}[ Submit Method ]{Style.RESET_ALL}")
+        print(f"  1. Save locally only (always available)")
+        if self.logged_in:
+            print(f"  2. Submit via Instagram API + save locally")
+        method = input("  Choice: ").strip()
+
+        report["status"] = "completed"
+
+        # Save
+        filename = save_report(report, "instagram")
+
+        # API submit
+        if method == "2" and self.logged_in:
+            self._api_submit(report)
+
+        # Generate human-readable report
+        self._generate_readable_report(report, filename)
+        return report
+
+    def _api_submit(self, report):
+        """Attempt API-based reporting via instagrapi."""
+        try:
+            target_id = report["target"].get("id", "unknown")
+            if target_id == "unknown":
+                print(f"{Fore.YELLOW}[!] Cannot submit API report: unknown target ID{Style.RESET_ALL}")
+                return
+
+            print(f"{Fore.YELLOW}[*] Submitting report to Instagram...{Style.RESET_ALL}")
+
+            # Map reason to Instagram's internal reason IDs
+            reason_map = {
+                "impersonation": 1,
+                "spam": 4,
+                "harassment": 2,
+                "hate_speech": 3,
+                "nudity": 5,
+                "scam": 4,
+                "ip_violation": 7,
+                "terrorism": 3,
+                "drugs": 6,
+            }
+
+            internal_reason = reason_map.get(report.get("reason_category", "spam"), 4)
+
+            # Submit report via instagrapi's private API
+            # instagrapi exposes report_user method
+            result = self.client.report_user(int(target_id), reason=internal_reason)
+            print(f"{Fore.GREEN}[✔] Report submitted to Instagram API successfully.{Style.RESET_ALL}")
+            report["api_submitted"] = True
+            report["api_result"] = str(result)
+
+        except AttributeError:
+            print(f"{Fore.YELLOW}[!] report_user() not available in this instagrapi version.{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Report saved locally. Manual submission required.{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}[✘] API submission failed: {e}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Report saved locally.{Style.RESET_ALL}")
+
+    def _generate_readable_report(self, report, json_path):
+        """Generate a human-readable .txt report."""
+        txt_path = json_path.with_suffix(".txt")
+        with open(txt_path, "w") as f:
+            f.write("=" * 60 + "\n")
+            f.write(f"  INSTAGRAM BAN REPORT\n")
+            f.write(f"  Report ID: {report['report_id']}\n")
+            f.write(f"  Generated: {report['timestamp']}\n")
+            f.write("=" * 60 + "\n\n")
+
+            f.write("── REPORTER ──\n")
+            f.write(f"  Username: @{report['reporter'].get('username', 'N/A')}\n")
+            f.write(f"  Authenticated: {report['reporter'].get('authenticated', False)}\n\n")
+
+            f.write("── TARGET ──\n")
+            tgt = report['target']
+            f.write(f"  Username: @{tgt.get('username', 'N/A')}\n")
+            f.write(f"  User ID: {tgt.get('id', 'N/A')}\n")
+            if tgt.get('full_name'):
+                f.write(f"  Full Name: {tgt['full_name']}\n")
+            if tgt.get('is_verified'):
+                f.write(f"  Verified Account: YES\n")
+            if tgt.get('is_private'):
+                f.write(f"  Private Account: YES\n")
+            f.write(f"  Resolved: {tgt.get('resolved', False)}\n\n")
+
+            f.write("── VIOLATION ──\n")
+            f.write(f"  Category: {report['reason_category']}\n")
+            f.write(f"  Reason: {report['reason']}\n\n")
+
+            f.write("── DESCRIPTION ──\n")
+            f.write(f"  {report['description']}\n\n")
+
+            if report.get('evidence'):
+                f.write("── EVIDENCE ──\n")
+                for i, ev in enumerate(report['evidence'], 1):
+                    f.write(f"  {i}. {ev}\n")
+                f.write("\n")
+
+            f.write("── STATUS ──\n")
+            f.write(f"  Report Status: {report['status']}\n")
+            f.write(f"  API Submitted: {report.get('api_submitted', False)}\n\n")
+
+            f.write("=" * 60 + "\n")
+            f.write("  END OF REPORT\n")
+            f.write("=" * 60 + "\n")
+
+        print(f"{Fore.GREEN}[✔] Readable report: {txt_path}{Style.RESET_ALL}")
+
+# ─── WhatsApp Reporter ───────────────────────────────────────────────────────────
+
+class WhatsAppReporter:
+    """Handles WhatsApp report generation and email-based reporting."""
+
+    def __init__(self):
+        pass
+
+    def build_report(self):
+        """Interactive report builder for WhatsApp."""
+        print_header("WhatsApp Report Builder")
+
+        report = {
+            "report_id": gen_report_id(),
+            "platform": "whatsapp",
+            "timestamp": timestamp(),
+            "reporter": {},
+            "target": {},
+            "violation_type": "",
+            "description": "",
+            "evidence": [],
+            "messages_included": False,
+            "status": "draft",
+        }
+
+        # Reporter phone
+        print(f"\n{Fore.CYAN}[ Reporter Info ]{Style.RESET_ALL}")
+        print(f"  Your phone number (with country code, e.g. +1XXX):")
+        rep_phone = input("  Phone: ").strip()
+        report["reporter"] = {
+            "phone": rep_phone,
+            "country": input("  Country: ").strip(),
+        }
+
+        # Target
+        print(f"\n{Fore.CYAN}[ Target ]{Style.RESET_ALL}")
+        print(f"  1. Phone number")
+        print(f"  2. Group")
+        target_type = input("  Choice: ").strip()
+
+        if target_type == "2":
+            report["target"]["type"] = "group"
+            report["target"]["group_name"] = input("  Group Name/ID: ").strip()
+            report["target"]["group_phone"] = input("  Group Contact (if known): ").strip()
+        else:
+            report["target"]["type"] = "individual"
+            report["target"]["phone"] = input("  Target Phone (+countrycode): ").strip()
+
+        if input("  Target name/alias (optional): ").strip():
+            report["target"]["name"] = _
+
+        # Violation type
+        print(f"\n{Fore.CYAN}[ Violation Type ]{Style.RESET_ALL}")
+        violations = [
+            ("1", "Spam / Unsolicited Messages"),
+            ("2", "Harassment / Hate Speech"),
+            ("3", "Scam / Phishing"),
+            ("4", "Impersonation"),
+            ("5", "Illegal Content"),
+            ("6", "Child Safety Concern"),
+            ("7", "Violence / Terrorism"),
+            ("8", "Other"),
+        ]
+        for key, val in violations:
+            print(f"  {key}. {val}")
+
+        v_choice = input("\n  Select: ").strip()
+        violation_map = {k: v for k, v in violations}
+        report["violation_type"] = violation_map.get(v_choice, "Other")
+
+        # Whether last 5 messages are available
+        print(f"\n{Fore.CYAN}[ Messages ]{Style.RESET_ALL}")
+        if input("  Include last 5 messages in report? (y/n): ").strip().lower() == 'y':
+            report["messages_included"] = True
+            print(f"  {Fore.YELLOW}  Note: WhatsApp automatically provides up to 5 last messages{Style.RESET_ALL}")
+            print(f"  {Fore.YELLOW}  when reporting through the app.{Style.RESET_ALL}")
+
+        # Description
+        print(f"\n{Fore.CYAN}[ Description ]{Style.RESET_ALL}")
+        report["description"] = input("  Details: ").strip()
+
+        # Evidence
+        print(f"\n{Fore.CYAN}[ Evidence (optional) ]{Style.RESET_ALL}")
+        print(f"  Enter screenshot URLs or reference IDs, one per line:")
+        while True:
+            url = input("  > ").strip()
+            if not url:
+                break
+            report["evidence"].append(url)
+
+        report["status"] = "completed"
+        filename = save_report(report, "whatsapp")
+
+        # Generate readable
+        self._generate_readable_report(report, filename)
+
+        # Email option
+        self._offer_email_submit(report)
+        return report
+
+    def _generate_readable_report(self, report, json_path):
+        """Generate a human-readable .txt report for WhatsApp."""
+        txt_path = json_path.with_suffix(".txt")
+        with open(txt_path, "w") as f:
+            f.write("=" * 60 + "\n")
+            f.write(f"  WHATSAPP BAN REPORT\n")
+            f.write(f"  Report ID: {report['report_id']}\n")
+            f.write(f"  Generated: {report['timestamp']}\n")
+            f.write("=" * 60 + "\n\n")
+
+            f.write("── REPORTER ──\n")
+            f.write(f"  Phone: {report['reporter'].get('phone', 'N/A')}\n")
+            f.write(f"  Country: {report['reporter'].get('country', 'N/A')}\n\n")
+
+            f.write("── TARGET ──\n")
+            tgt = report['target']
+            f.write(f"  Type: {tgt.get('type', 'N/A')}\n")
+            if tgt.get('phone'):
+                f.write(f"  Phone: {tgt['phone']}\n")
+            if tgt.get('group_name'):
+                f.write(f"  Group: {tgt['group_name']}\n")
+            if tgt.get('name'):
+                f.write(f"  Name: {tgt['name']}\n")
+            f.write("\n")
+
+            f.write("── VIOLATION ──\n")
+            f.write(f"  Type: {report['violation_type']}\n")
+            f.write(f"  Messages Included: {report['messages_included']}\n\n")
+
+            f.write("── DESCRIPTION ──\n")
+            f.write(f"  {report['description']}\n\n")
+
+            if report.get('evidence'):
+                f.write("── EVIDENCE ──\n")
+                for i, ev in enumerate(report['evidence'], 1):
+                    f.write(f"  {i}. {ev}\n")
+                f.write("\n")
+
+            f.write("── SUBMISSION ──\n")
+            f.write(f"  WhatsApp Grievance Email: grievance_officer_wa@support.whatsapp.com\n")
+            f.write(f"  WhatsApp Abuse Form: https://www.whatsapp.com/contact/?subject=abuse\n")
+            f.write(f"  Appeal Form: https://www.whatsapp.com/contact/?subject=appeal\n\n")
+
+            f.write("=" * 60 + "\n")
+            f.write("  END OF REPORT\n")
+            f.write("=" * 60 + "\n")
+
+        print(f"{Fore.GREEN}[✔] Readable report: {txt_path}{Style.RESET_ALL}")
+
+    def _offer_email_submit(self, report):
+        """Show email submission instructions."""
+        print(f"\n{Fore.CYAN}[ Email Submission ]{Style.RESET_ALL}")
+        print(f"  To submit this report to WhatsApp Grievance Officer:")
+        print(f"  ─────────────────────────────────────────────")
+        print(f"  Email to: {Fore.YELLOW}grievance_officer_wa@support.whatsapp.com{Style.RESET_ALL}")
+        print(f"  Subject:  [ABUSE REPORT] {report['report_id']} - {report['violation_type']}")
+        print(f"  ─────────────────────────────────────────────")
+        print(f"  Body includes:")
+        print(f"    • Target: {report['target'].get('phone', report['target'].get('group_name', 'N/A'))}")
+        print(f"    • Violation: {report['violation_type']}")
+        print(f"    • Description: {report['description'][:80]}...")
+        if report.get('evidence'):
+            print(f"    • Evidence: {', '.join(report['evidence'])}")
+        print(f"  ─────────────────────────────────────────────")
+        print(f"\n  {Fore.YELLOW}Note: Termux cannot send emails natively.{Style.RESET_ALL}")
+        print(f"  {Fore.YELLOW}Copy the generated .txt report and email it manually.{Style.RESET_ALL}")
+
+# ─── Bulk/Batch Reporter ─────────────────────────────────────────────────────────
+
+class BatchReporter:
+    """Generate multiple reports from a file."""
+
+    @staticmethod
+    def from_file(filepath):
+        """Read targets from file and generate reports."""
+        if not Path(filepath).exists():
+            print(f"{Fore.RED}[✘] File not found: {filepath}{Style.RESET_ALL}")
+            return
+
+        print_header("Batch Report Generation")
+        print(f"  Reading targets from: {filepath}")
+
+        with open(filepath) as f:
+            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+
+        print(f"  Found {len(lines)} target(s)")
+        platform = input("  Platform (whatsapp/instagram): ").strip().lower()
+
+        # Shared violation info
+        violation = input("  Violation type/reason (all targets): ").strip()
+        description = input("  Description (all targets): ").strip()
+
+        results = []
+        for target in lines:
+            report = {
+                "report_id": gen_report_id(),
+                "platform": platform,
+                "batch": True,
+                "timestamp": timestamp(),
+                "target": {"identifier": target},
+                "violation_type": violation,
+                "description": description,
+                "status": "completed",
+            }
+            save_report(report, f"{platform}_batch")
+            results.append(target)
+            print(f"{Fore.GREEN}  [{len(results)}/{len(lines)}] Generated: {target}{Style.RESET_ALL}")
+            time.sleep(0.2)
+
+        print(f"\n{Fore.GREEN}[✔] Batch complete: {len(results)} reports generated.{Style.RESET_ALL}")
+
+# ─── Report Viewer ───────────────────────────────────────────────────────────────
+
+class ReportViewer:
+    """View and manage saved reports."""
+
+    @staticmethod
+    def view(report_id=None):
+        """Display a specific report or list all."""
+        if report_id:
+            files = list(REPORTS_DIR.glob(f"*{report_id}*"))
+            if not files:
+                print(f"{Fore.RED}[✘] No report found with ID: {report_id}{Style.RESET_ALL}")
+                return
+            # Show JSON
+            for f in files:
+                if f.suffix == ".json":
+                    with open(f) as jf:
+                        data = json.load(jf)
+                    print(json.dumps(data, indent=2))
+        else:
+            load_previous_reports()
+
+    @staticmethod
+    def export_all():
+        """Export all reports to a single archive text file."""
+        files = list(REPORTS_DIR.glob("*.txt"))
+        if not files:
+            print(f"{Fore.YELLOW}[!] No readable reports to export.{Style.RESET_ALL}")
+            return
+
+        archive_path = REPORTS_DIR / f"report_archive_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(archive_path, "w") as out:
+            for f in files:
+                out.write(f.read_text())
+                out.write("\n\n" + "=" * 60 + "\n\n")
+
+        print(f"{Fore.GREEN}[✔] Archive created: {archive_path}{Style.RESET_ALL}")
+
+# ─── Main Menu ────────────────────────────────────────────────────────────────────
+
+def main():
+    os.system("clear" if os.name == "posix" else "cls")
+    print(BANNER)
+
+    # Parse args
+    parser = argparse.ArgumentParser(
+        description="MetaBanReport - WhatsApp & Instagram Ban Report Generator",
+        epilog="Authorized penetration testing tool. Ensure proper authorization before use."
+    )
+    parser.add_argument("--batch", "-b", help="Batch generate reports from a file")
+    parser.add_argument("--view", "-v", nargs="?", const="all", help="View saved reports")
+    parser.add_argument("--export", "-e", action="store_true", help="Export all reports to archive")
+    parser.add_argument("--version", action="store_true", help="Show version")
+    args = parser.parse_args()
+
+    if args.version:
+        print(f"MetaBanReport v{VERSION}")
+        return
+
+    if args.export:
+        ReportViewer.export_all()
+        return
+
+    if args.view:
+        if args.view == "all":
+            ReportViewer.view()
+        else:
+            ReportViewer.view(args.view)
+        return
+
+    if args.batch:
+        BatchReporter.from_file(args.batch)
+        return
+
+    # Interactive menu
+    while True:
+        print(f"\n{Fore.CYAN}SELECT PLATFORM:{Style.RESET_ALL}")
+        print(f"  {Fore.WHITE}1.{Style.RESET_ALL} Instagram Report")
+        print(f"  {Fore.WHITE}2.{Style.RESET_ALL} WhatsApp Report")
+        print(f"  {Fore.WHITE}3.{Style.RESET_ALL} Batch Report (from file)")
+        print(f"  {Fore.WHITE}4.{Style.RESET_ALL} View Saved Reports")
+        print(f"  {Fore.WHITE}5.{Style.RESET_ALL} Export All Reports")
+        print(f"  {Fore.WHITE}6.{Style.RESET_ALL} Help / Instructions")
+        print(f"  {Fore.WHITE}7.{Style.RESET_ALL} Exit")
+
+        choice = input(f"\n{Fore.GREEN}  >>>{Style.RESET_ALL} ").strip()
+
+        if choice == "1":
+            reporter = InstagramReporter()
+            reporter.login_interactive()
+            reporter.build_report()
+
+        elif choice == "2":
+            reporter = WhatsAppReporter()
+            reporter.build_report()
+
+        elif choice == "3":
+            fp = input("  Path to targets file: ").strip()
+            BatchReporter.from_file(fp)
+
+        elif choice == "4":
+            ReportViewer.view()
+
+        elif choice == "5":
+            ReportViewer.export_all()
+
+        elif choice == "6":
+            print_header("Help / Instructions")
+            print(f"""
+  {Fore.WHITE}MetaBanReport v{VERSION}{Style.RESET_ALL}
+  ─────────────────────────────────────────────
+  Generates structured ban reports for:
+    • Instagram (via API + local save)
+    • WhatsApp (via local save + email template)
+
+  {Fore.YELLOW}Instagram API Reporting:{Style.RESET_ALL}
+    Uses instagrapi to authenticate and submit
+    reports via Instagram's private API.
+    Requires valid Instagram credentials.
+
+  {Fore.YELLOW}WhatsApp Reporting:{Style.RESET_ALL}
+    WhatsApp does not expose a public API for
+    reporting. This tool generates formatted
+    reports that can be emailed to:
+    → grievance_officer_wa@support.whatsapp.com
+    Or submitted via:
+    → https://www.whatsapp.com/contact/?subject=abuse
+
+  {Fore.YELLOW}Reports are saved to:{Style.RESET_ALL}
+    ~/.metaban_reports/
+    (JSON + human-readable .txt versions)
+
+  {Fore.YELLOW}Batch Mode:{Style.RESET_ALL}
+    Create a text file with one target per line.
+    Use: python metabanreport.py --batch targets.txt
+
+  {Fore.YELLOW}Authorization:{Style.RESET_ALL}
+    Ensure you have explicit permission before
+    submitting reports. This is a pentest tool.
+""")
+
+        elif choice == "7":
+            print(f"\n{Fore.GREEN}[+] Exiting. Reports saved to: {REPORTS_DIR}{Style.RESET_ALL}")
+            break
+
+        else:
+            print(f"{Fore.RED}[!] Invalid choice.{Style.RESET_ALL}")
+
+        input(f"\n{Fore.CYAN}Press Enter to continue...{Style.RESET_ALL}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n{Fore.YELLOW}[!] Interrupted.{Style.RESET_ALL}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Fore.RED}[✘] Fatal error: {e}{Style.RESET_ALL}")
+        sys.exit(1)

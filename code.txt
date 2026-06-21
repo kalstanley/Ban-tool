@@ -1,0 +1,9 @@
+# MetaBanReport Batch Targets
+# One target per line, lines starting with # are ignored
+# Instagram: usernames or user IDs
+# WhatsApp: phone numbers with country code
+
+target_user_1
++1234567890
+another_username
++447911123456
